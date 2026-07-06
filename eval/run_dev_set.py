@@ -67,7 +67,7 @@ def run_one_case(case: dict, base_config: dict, gold_law_map: dict[str, str]) ->
         {"agent": {"output_path": RUNS_DIR / f"{case_id}.traj.json"}},
     )
 
-    model = get_model(config.get("model", {}))
+    model = get_model(config=config.get("model", {}))
     env = AlqacEnv(case=case, runs_dir=str(RUNS_DIR), **_filter_env_kwargs(config.get("environment", {})))
     agent = get_agent(model, env, config.get("agent", {}), default_type="default")
 

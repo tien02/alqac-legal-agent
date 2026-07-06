@@ -63,7 +63,7 @@ agent:
 
 model:
   model_class: minisweagent.models.litellm_textbased_model.LitellmTextbasedModel
-  model_name: openai/qwen3.5-9b
+  model_name: openai/qwen2.5-7b
   model_kwargs:
     api_base: http://localhost:8001/v1
     api_key: local-dev-key

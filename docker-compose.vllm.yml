@@ -9,7 +9,7 @@ services:
           devices:
             - driver: nvidia
               capabilities: [gpu]
-              count: 1
+              count: 2
     environment:
       - HF_HOME=/root/.cache/huggingface
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
@@ -19,15 +19,14 @@ services:
     ports:
       - "8001:8000"
     command: >
-      --model unsloth/Qwen3.5-9B-GGUF
-      --tokenizer unsloth/Qwen3.5-9B
-      --quantization gguf
-      --gpu-memory-utilization 0.85
-      --max-model-len 16384
+      --model Qwen/Qwen2.5-7B-Instruct
+      --tensor-parallel-size 2
+      --gpu-memory-utilization 0.9
+      --max-model-len 8192
       --host 0.0.0.0
       --port 8000
       --api-key local-dev-key
-      --served-model-name qwen3.5-9b
+      --served-model-name qwen2.5-7b
       --enforce-eager
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
