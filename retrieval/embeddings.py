@@ -18,7 +18,7 @@ class DenseEncoder:
     def __init__(self, model_name: str = DENSE_MODEL, device: str | None = None, batch_size: int = 16):
         from transformers import AutoModel, AutoTokenizer
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or os.environ.get("LAW_INDEX_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name).to(self.device).eval()
         self.batch_size = batch_size
@@ -45,7 +45,7 @@ class Reranker:
     def __init__(self, model_name: str = RERANK_MODEL, device: str | None = None, batch_size: int = 16):
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or os.environ.get("LAW_INDEX_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name).to(self.device).eval()
         self.batch_size = batch_size

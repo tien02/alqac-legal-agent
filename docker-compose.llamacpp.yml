@@ -1,0 +1,98 @@
+services:
+  jackrong:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: alqac-jackrong
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      - ${HOME}/models_alqac:/models
+    ports:
+      - "8001:8000"
+    command: >
+      -m /models/Qwen3.5-9B.Q4_K_M.gguf
+      --host 0.0.0.0 --port 8000
+      --api-key local-dev-key
+      --alias jackrong-distill-9b
+      -ngl 999 -c 16384 --parallel 1 -np 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+    profiles: ["jackrong"]
+
+  deepseek:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: alqac-deepseek
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      - ${HOME}/models_alqac:/models
+    ports:
+      - "8003:8000"
+    command: >
+      -m /models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf
+      --host 0.0.0.0 --port 8000
+      --api-key local-dev-key
+      --alias deepseek-r1-qwen-7b
+      -ngl 999 -c 16384 --parallel 1 -np 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+    profiles: ["deepseek"]
+
+  qwen35base:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: alqac-qwen35base
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=1
+    volumes:
+      - ${HOME}/models_alqac:/models
+    ports:
+      - "8002:8000"
+    command: >
+      -m /models/Qwen3.5-9B-base.Q4_K_M.gguf
+      --host 0.0.0.0 --port 8000
+      --api-key local-dev-key
+      --alias qwen3.5-9b-gguf
+      -ngl 999 -c 16384 --parallel 1 -np 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+
+  qwen35base2:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: alqac-qwen35base2
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      - ${HOME}/models_alqac:/models
+    ports:
+      - "8001:8000"
+    command: >
+      -m /models/Qwen3.5-9B-base.Q4_K_M.gguf
+      --host 0.0.0.0 --port 8000
+      --api-key local-dev-key
+      --alias qwen3.5-9b-gguf
+      -ngl 999 -c 16384 --parallel 1 -np 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped

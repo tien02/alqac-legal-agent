@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rank_bm25 import BM25Okapi
+from underthesea import word_tokenize
+
+_PUNCT = ".,;:!?\"'`()[]{}|="
 
 
 @dataclass(frozen=True)
@@ -21,8 +24,9 @@ class LawArticle:
 
 
 def tokenize_vi(text: str) -> list[str]:
-    """Whitespace + punctuation tokenizer. Vietnamese doesn't need lemmatization for BM25 recall."""
-    return [t.strip(".,;:!?\"'`()[]{}|=") for t in text.split() if len(t.strip(".,;:!?\"'`()[]{}|=")) > 1]
+    """Underthesea word-segmentation. Merges Vietnamese compound words ("hợp đồng" -> "hợp_đồng")."""
+    toks = word_tokenize(text.lower(), format="text").split()
+    return [t.strip(_PUNCT) for t in toks if len(t.strip(_PUNCT)) > 1]
 
 
 class BM25LawIndex:

@@ -19,6 +19,7 @@ dependencies = [
   "pydantic>=2.7",
   "litellm>=1.50",
   "mini-swe-agent",
+  "underthesea>=6.8",
 ]
 
 [project.optional-dependencies]

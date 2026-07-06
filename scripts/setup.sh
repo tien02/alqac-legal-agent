@@ -52,9 +52,9 @@ if [ ! -f .env ]; then
   log "Creating .env from template. Set ALQAC_API_KEY before running eval."
   cat > .env <<'EOF'
 ALQAC_API_KEY=alqac_REPLACE_ME
-VLLM_BASE_URL=http://localhost:8001/v1
-VLLM_API_KEY=local-dev-key
-VLLM_MODEL_NAME=qwen2.5-7b
+LLAMACPP_BASE_URL=http://localhost:8001/v1
+LLAMACPP_API_KEY=local-dev-key
+LLAMACPP_MODEL_NAME=jackrong-distill-9b
 HF_TOKEN=
 ALQAC_DATA_DIR=./Data
 ALQAC_RUNS_DIR=./runs
@@ -67,10 +67,33 @@ fi
 # ------------------------------------------------------------------
 # 5. Runs / models dirs
 # ------------------------------------------------------------------
-mkdir -p runs models
+mkdir -p runs "${HOME}/models_alqac"
 
 # ------------------------------------------------------------------
-# 6. Build law retrieval indices (skip if already built)
+# 6. Download GGUF models (skip if present)
+# ------------------------------------------------------------------
+JACKRONG=${HOME}/models_alqac/Qwen3.5-9B.Q4_K_M.gguf
+QWEN35BASE=${HOME}/models_alqac/Qwen3.5-9B-base.Q4_K_M.gguf
+
+if [ ! -f "$JACKRONG" ]; then
+  log "Downloading Jackrong Qwen3.5-9B Q4_K_M (~5.6 GB)..."
+  uv run hf download Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF \
+    Qwen3.5-9B.Q4_K_M.gguf --local-dir "${HOME}/models_alqac/"
+else
+  log "Jackrong GGUF present — skipping."
+fi
+
+if [ ! -f "$QWEN35BASE" ]; then
+  log "Downloading Qwen3.5-9B base Q4_K_M (~5.3 GB)..."
+  uv run hf download unsloth/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf \
+    --local-dir "${HOME}/models_alqac/"
+  mv "${HOME}/models_alqac/Qwen3.5-9B-Q4_K_M.gguf" "$QWEN35BASE"
+else
+  log "Qwen3.5-9B base GGUF present — skipping."
+fi
+
+# ------------------------------------------------------------------
+# 7. Build law retrieval indices (skip if already built)
 # ------------------------------------------------------------------
 if [ ! -f runs/law_bm25.pkl ] || [ ! -f runs/law_dense.npy ]; then
   log "Building law indices (BM25 + dense) — first run ~5–10 min..."
@@ -80,32 +103,35 @@ else
 fi
 
 # ------------------------------------------------------------------
-# 7. vLLM
+# 8. llama.cpp servers (Jackrong on GPU 0 :8001, Qwen35-base on GPU 1 :8002)
 # ------------------------------------------------------------------
-if docker ps --format '{{.Names}}' | grep -q '^alqac-vllm$'; then
-  log "vLLM container already running."
+if docker ps --format '{{.Names}}' | grep -q '^alqac-jackrong$'; then
+  log "llama.cpp containers already running."
 else
-  log "Starting vLLM (Qwen2.5-7B-Instruct, tensor-parallel-size=2)..."
-  docker compose -f docker-compose.vllm.yml up -d
+  log "Starting llama.cpp (Jackrong :8001, Qwen35-base :8002)..."
+  docker compose -f docker-compose.llamacpp.yml up -d
 
-  log "Waiting for vLLM health (max 5 min)..."
+  log "Waiting for both endpoints (max 5 min)..."
   for i in $(seq 1 30); do
     sleep 10
-    if curl -sf http://localhost:8001/v1/models \
-        -H "Authorization: Bearer local-dev-key" >/dev/null 2>&1; then
-      log "vLLM ready after ${i}0s."
+    A=$(curl -sf http://localhost:8001/health >/dev/null 2>&1 && echo ok || echo wait)
+    B=$(curl -sf http://localhost:8002/health >/dev/null 2>&1 && echo ok || echo wait)
+    if [ "$A $B" = "ok ok" ]; then
+      log "Both llama.cpp endpoints ready after ${i}0s."
       break
     fi
-    printf "  waiting ${i}0s...\n"
+    printf "  jackrong:%s qwen35base:%s (%s s)\n" "$A" "$B" "$((i * 10))"
     if [ "$i" = "30" ]; then
-      warn "vLLM did not become ready in 5 min. Check: docker logs alqac-vllm"
+      warn "Some endpoints did not become ready. Check: docker logs alqac-jackrong / alqac-qwen35base"
     fi
   done
 fi
 
 # ------------------------------------------------------------------
-# 8. Next steps
+# 9. Next steps
 # ------------------------------------------------------------------
-log "Smoke test (1 case):  uv run python -m eval.run_dev_set --max-cases 1"
-log "Full evaluation:      uv run python -m eval.run_dev_set"
+log "Smoke test (1 case):  uv run python -m eval.run_dev_set --max-cases 1 --run-name smoke"
+log "Full evaluation:      uv run python -m eval.run_dev_set --run-name full"
+log "List runs:            uv run python -m eval.list_runs"
+log "Compare two runs:     uv run python -m eval.compare_runs <run_id_a> <run_id_b>"
 log "Setup complete."

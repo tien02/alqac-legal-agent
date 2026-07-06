@@ -63,14 +63,17 @@ agent:
 
 model:
   model_class: minisweagent.models.litellm_textbased_model.LitellmTextbasedModel
-  model_name: openai/qwen2.5-7b
+  model_name: openai/jackrong-distill-9b
   model_kwargs:
     api_base: http://localhost:8001/v1
     api_key: local-dev-key
-    temperature: 1.0
+    temperature: 0.7
     top_p: 0.95
-    max_tokens: 2048
+    max_tokens: 4096
     drop_params: true
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
   cost_tracking: ignore_errors
   observation_template: |
     {% if output.exception_info -%}
@@ -96,3 +99,5 @@ environment:
     MANPAGER: cat
     LESS: -R
     PYTHONUNBUFFERED: "1"
+    LAW_INDEX_DEVICE: cpu
+    CUDA_VISIBLE_DEVICES: ""
