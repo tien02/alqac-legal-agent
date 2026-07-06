@@ -1,0 +1,98 @@
+agent:
+  agent_class: minisweagent.agents.default.DefaultAgent
+  step_limit: 8
+  cost_limit: 0.0
+  wall_time_limit_seconds: 240
+  output_path: null
+  system_template: |
+    You are a Vietnamese legal case analyst for ALQAC 2026.
+    Use the MA-RAG flow: Planner → Evidence → Law → Verdict.
+
+    ## Tools (call via ```mswea_bash_command``` blocks)
+
+    1. Case evidence (judgment chunks):
+       ```mswea_bash_command
+       python tools/search_case.py --query "<Vietnamese query about a fact in dispute>" --case-id {{ case_id }}
+       ```
+       Returns ONE judgment chunk per call. Each unique chunk counts against budget.
+       Hard cap: 50 calls/case. Soft target: stop once you have enough evidence (≤10 calls ideal).
+
+    2. Law articles:
+       ```mswea_bash_command
+       python tools/search_law.py --query "<Vietnamese legal concept>" --top-k 5
+       ```
+       Returns top-k articles from corpus_law_pub.json (18 laws, 3352 articles).
+
+    ## Verdict classes (pick EXACTLY ONE)
+    - A_WIN: court grants all of party A's claims
+    - PARTIAL_A_WIN: court grants >50% of A's claimed amount/items
+    - PARTIAL_B_WIN: court grants ≤50% of A's claimed amount/items (B substantially prevails)
+    - B_WIN: court denies all of A's claims
+
+    ## Workflow
+    1. Read case_fact + case_query. Identify what each side (A_role, B_role) is claiming.
+    2. Pull 2–5 judgment chunks via search_case.py targeting disputed facts.
+    3. Pull 3–5 relevant articles via search_law.py targeting the legal issue.
+    4. Decide verdict label. Cite ≥1 article.
+    5. Submit final JSON via:
+       ```mswea_bash_command
+       echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && cat <<'EOF'
+       {"verdict":"<LABEL>","evidence_chunk_ids":[...],"law_refs":[{"law_id":"91/2015/QH13","article_number":584}],"reason":"<tiếng Việt>"}
+       EOF
+       ```
+
+    ## Rules
+    - Every response must contain exactly ONE ```mswea_bash_command``` block.
+    - Repeating the same query wastes budget. Vary queries to find new chunks.
+    - Stop calling tools once you can pick a verdict label and cite ≥1 article.
+    - Use Vietnamese for queries and reasons. Verdict label must be exactly one of the four English tokens above.
+
+  instance_template: |
+    Case ID: {{ case_id }}
+    Court: {{ court }}
+    Case type: {{ case_type }}
+    A role ({{ A_role }}) vs B role ({{ B_role }})
+
+    ## Case fact
+    {{ case_fact }}
+
+    ## Question
+    {{ case_query }}
+
+    Analyse this case and produce the final JSON verdict per the system instructions.
+
+model:
+  model_class: minisweagent.models.litellm_textbased_model.LitellmTextbasedModel
+  model_name: openai/qwen3.5-9b
+  model_kwargs:
+    api_base: http://localhost:8001/v1
+    api_key: local-dev-key
+    temperature: 1.0
+    top_p: 0.95
+    max_tokens: 2048
+    drop_params: true
+  cost_tracking: ignore_errors
+  observation_template: |
+    {% if output.exception_info -%}
+    <exception>{{output.exception_info}}</exception>
+    {% endif -%}
+    <returncode>{{output.returncode}}</returncode>
+    {% if output.output | length < 10000 -%}
+    <output>
+    {{ output.output -}}
+    </output>
+    {%- else -%}
+    <warning>Output truncated. Use more selective commands.</warning>
+    <output_head>{{ output.output[:5000] }}</output_head>
+    <output_tail>{{ output.output[-5000:] }}</output_tail>
+    {%- endif %}
+
+environment:
+  environment_class: minisweagent.environments.local.LocalEnvironment
+  cwd: ""
+  timeout: 60
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PYTHONUNBUFFERED: "1"

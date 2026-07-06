@@ -1,0 +1,38 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: alqac-vllm
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              count: 1
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./models:/models
+    ports:
+      - "8001:8000"
+    command: >
+      --model unsloth/Qwen3.5-9B-GGUF
+      --tokenizer unsloth/Qwen3.5-9B
+      --quantization gguf
+      --gpu-memory-utilization 0.85
+      --max-model-len 16384
+      --host 0.0.0.0
+      --port 8000
+      --api-key local-dev-key
+      --served-model-name qwen3.5-9b
+      --enforce-eager
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+    restart: unless-stopped

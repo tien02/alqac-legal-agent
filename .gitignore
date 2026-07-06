@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Models / data caches
+models/
+runs/
+*.pkl
+*.npy
+*.gguf
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# vLLM
+*.log
+
+# Nested repos
+mini-swe-agent/
