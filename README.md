@@ -164,7 +164,7 @@ docker compose -f docker-compose.llamacpp.yml up -d qwen35base qwen35base2
 Swap in another model on GPU 0:
 
 ```bash
-docker stop alqac-qwen35base2 && docker rm alqac-qwen35base2
+docker stop alqac-gpu0 && docker rm alqac-gpu0
 docker compose -f docker-compose.llamacpp.yml --profile jackrong up -d jackrong
 ```
 

@@ -1,98 +1,100 @@
+# One llama.cpp service per GPU.
+# Default (all GPUs available on the host):
+#   docker compose up -d                       # starts gpu0..gpu3, extras exit
+#                                              # cleanly if the GPU doesn't exist
+# If you only have 2 GPUs, use profiles to be explicit:
+#   docker compose --profile gpu0 --profile gpu1 up -d
+# For 4 GPUs, add gpu2 and gpu3 explicitly (they're optional profiles):
+#   docker compose --profile gpu0 --profile gpu1 --profile gpu2 --profile gpu3 up -d
+#
+# Windows: same commands in PowerShell.
+# Weights live in $HOME/models_alqac (Linux) or $USERPROFILE\models_alqac (Windows).
+
+x-llamacpp: &llamacpp
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda
+  runtime: nvidia
+  volumes:
+    - ${HOME}/models_alqac:/models
+  command: >
+    -m /models/${LLAMACPP_MODEL_FILE:-Qwen3.5-9B-base.Q4_K_M.gguf}
+    --host 0.0.0.0 --port 8000
+    --api-key ${LLAMACPP_API_KEY:-local-dev-key}
+    --alias ${LLAMACPP_ALIAS:-qwen3.5-9b-gguf}
+    -ngl 999 -c ${LLAMACPP_CTX:-65536}
+    --parallel ${LLAMACPP_PARALLEL:-4} -np ${LLAMACPP_PARALLEL:-4}
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 90s
+  restart: unless-stopped
+
 services:
-  jackrong:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    container_name: alqac-jackrong
-    runtime: nvidia
+  gpu0:
+    <<: *llamacpp
+    container_name: alqac-gpu0
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
-    volumes:
-      - ${HOME}/models_alqac:/models
     ports:
       - "8001:8000"
+
+  gpu1:
+    <<: *llamacpp
+    container_name: alqac-gpu1
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=1
+    ports:
+      - "8002:8000"
+
+  gpu2:
+    <<: *llamacpp
+    container_name: alqac-gpu2
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=2
+    ports:
+      - "8003:8000"
+    profiles: ["gpu2"]
+
+  gpu3:
+    <<: *llamacpp
+    container_name: alqac-gpu3
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=3
+    ports:
+      - "8004:8000"
+    profiles: ["gpu3"]
+
+  # Alternate models (behind profiles). Adjust NVIDIA_VISIBLE_DEVICES + port
+  # if you need to swap one GPU off the base model.
+  jackrong:
+    <<: *llamacpp
+    container_name: alqac-jackrong
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+    ports:
+      - "8011:8000"
     command: >
       -m /models/Qwen3.5-9B.Q4_K_M.gguf
       --host 0.0.0.0 --port 8000
-      --api-key local-dev-key
+      --api-key ${LLAMACPP_API_KEY:-local-dev-key}
       --alias jackrong-distill-9b
-      -ngl 999 -c 16384 --parallel 1 -np 1
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 90s
-    restart: unless-stopped
+      -ngl 999 -c ${LLAMACPP_CTX:-65536}
+      --parallel ${LLAMACPP_PARALLEL:-4} -np ${LLAMACPP_PARALLEL:-4}
     profiles: ["jackrong"]
 
   deepseek:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    <<: *llamacpp
     container_name: alqac-deepseek
-    runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
-    volumes:
-      - ${HOME}/models_alqac:/models
     ports:
-      - "8003:8000"
+      - "8012:8000"
     command: >
       -m /models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf
       --host 0.0.0.0 --port 8000
-      --api-key local-dev-key
+      --api-key ${LLAMACPP_API_KEY:-local-dev-key}
       --alias deepseek-r1-qwen-7b
-      -ngl 999 -c 16384 --parallel 1 -np 1
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 90s
-    restart: unless-stopped
+      -ngl 999 -c ${LLAMACPP_CTX:-65536}
+      --parallel ${LLAMACPP_PARALLEL:-4} -np ${LLAMACPP_PARALLEL:-4}
     profiles: ["deepseek"]
-
-  qwen35base:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    container_name: alqac-qwen35base
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=1
-    volumes:
-      - ${HOME}/models_alqac:/models
-    ports:
-      - "8002:8000"
-    command: >
-      -m /models/Qwen3.5-9B-base.Q4_K_M.gguf
-      --host 0.0.0.0 --port 8000
-      --api-key local-dev-key
-      --alias qwen3.5-9b-gguf
-      -ngl 999 -c 16384 --parallel 1 -np 1
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 90s
-    restart: unless-stopped
-
-  qwen35base2:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    container_name: alqac-qwen35base2
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=0
-    volumes:
-      - ${HOME}/models_alqac:/models
-    ports:
-      - "8001:8000"
-    command: >
-      -m /models/Qwen3.5-9B-base.Q4_K_M.gguf
-      --host 0.0.0.0 --port 8000
-      --api-key local-dev-key
-      --alias qwen3.5-9b-gguf
-      -ngl 999 -c 16384 --parallel 1 -np 1
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 90s
-    restart: unless-stopped

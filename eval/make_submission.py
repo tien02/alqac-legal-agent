@@ -50,13 +50,45 @@ def _valid_aids_by_law() -> dict[str, set[int]]:
 
 
 def _resolve_law_refs(
-    refs: list[dict],
+    refs: list,
     anum_to_aid: dict[tuple[str, int], int],
     valid_aids: dict[str, set[int]],
+    case_id: str | None = None,
 ) -> list[dict]:
+    """Resolve either:
+      - list[int]: ref_ids looked up via runs/law_refs.db (scoped by case_id)
+      - list[dict]: legacy {law_id, article_number|aid} shape.
+    """
     resolved: list[dict] = []
     seen: set[tuple[str, int]] = set()
-    for r in refs or []:
+    if not refs:
+        return resolved
+
+    if case_id and all(isinstance(x, (int, float, str)) and str(x).lstrip("-").isdigit() for x in refs):
+        try:
+            from retrieval.law_refs_registry import LawRefsRegistry
+        except Exception:
+            return resolved
+        reg = LawRefsRegistry()
+        for x in refs:
+            try:
+                ref = reg.lookup(case_id, int(x))
+            except (ValueError, TypeError):
+                continue
+            if ref is None or ref.aid is None:
+                print(f"  drop ref (unknown ref_id): case={case_id} ref_id={x}", file=sys.stderr)
+                continue
+            key = (ref.law_id, int(ref.aid))
+            if key in seen:
+                continue
+            seen.add(key)
+            resolved.append({"law_id": ref.law_id, "aid": int(ref.aid)})
+        return resolved
+
+    # Legacy dict shape.
+    for r in refs:
+        if not isinstance(r, dict):
+            continue
         law_id = str(r.get("law_id", "")).strip()
         val = r.get("article_number", r.get("aid"))
         if not law_id or val is None:
@@ -109,7 +141,7 @@ def main(run_dirs: list[str], output: str = "submission.json") -> None:
                 "prediction": r.get("pred_verdict", "") or "",
                 "case_evidence": list(r.get("evidence_chunk_ids", []) or []),
                 "law_evidence": _resolve_law_refs(
-                    r.get("pred_law_refs", []), anum_to_aid, valid_aids
+                    r.get("pred_law_refs", []), anum_to_aid, valid_aids, case_id=case_id
                 ),
             }
 

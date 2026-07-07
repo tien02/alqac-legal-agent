@@ -7,6 +7,7 @@ from minisweagent.environments.local import LocalEnvironment
 from minisweagent.utils.serialize import recursive_merge
 
 from retrieval.case_api_client import CaseApiClient
+from retrieval.law_refs_registry import LawRefsRegistry
 
 
 class AlqacEnv(LocalEnvironment):
@@ -27,6 +28,10 @@ class AlqacEnv(LocalEnvironment):
                 CaseApiClient(runs_dir=runs_dir).reset_case(case["case_id"])
             except RuntimeError:
                 pass  # ALQAC_API_KEY unset: skip reset (smoke mode)
+            try:
+                LawRefsRegistry().reset_case(case["case_id"])
+            except Exception:
+                pass
 
     def get_template_vars(self, **kwargs) -> dict[str, Any]:
         case = self.case

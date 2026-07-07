@@ -105,10 +105,10 @@ fi
 # ------------------------------------------------------------------
 # 8. llama.cpp servers (Jackrong on GPU 0 :8001, Qwen35-base on GPU 1 :8002)
 # ------------------------------------------------------------------
-if docker ps --format '{{.Names}}' | grep -q '^alqac-jackrong$'; then
+if docker ps --format '{{.Names}}' | grep -q '^alqac-gpu0$'; then
   log "llama.cpp containers already running."
 else
-  log "Starting llama.cpp (Jackrong :8001, Qwen35-base :8002)..."
+  log "Starting llama.cpp (gpu0 :8001, gpu1 :8002)..."
   docker compose -f docker-compose.llamacpp.yml up -d
 
   log "Waiting for both endpoints (max 5 min)..."
@@ -122,7 +122,7 @@ else
     fi
     printf "  jackrong:%s qwen35base:%s (%s s)\n" "$A" "$B" "$((i * 10))"
     if [ "$i" = "30" ]; then
-      warn "Some endpoints did not become ready. Check: docker logs alqac-jackrong / alqac-qwen35base"
+      warn "Some endpoints did not become ready. Check: docker logs alqac-gpu0 / alqac-gpu1"
     fi
   done
 fi

@@ -1,8 +1,8 @@
 agent:
   agent_class: minisweagent.agents.default.DefaultAgent
-  step_limit: 8
+  step_limit: 30
   cost_limit: 0.0
-  wall_time_limit_seconds: 240
+  wall_time_limit_seconds: 600
   output_path: null
   system_template: |
     You are a Vietnamese legal case analyst for ALQAC 2026.
@@ -17,11 +17,44 @@ agent:
        Returns ONE judgment chunk per call. Each unique chunk counts against budget.
        Hard cap: 50 calls/case. Soft target: stop once you have enough evidence (≤10 calls ideal).
 
-    2. Law articles:
+    2. Law articles (scoped by law):
        ```mswea_bash_command
-       python tools/search_law.py --query "<Vietnamese legal concept>" --top-k 5
+       python tools/search_law.py --query "<Vietnamese legal concept>" --case-id {{ case_id }} --law-id <LAW_ID> --top-k 5
        ```
-       Returns top-k articles from corpus_law_pub.json (18 laws, 3352 articles).
+       You MUST pass `--law-id` to restrict retrieval to a specific bộ luật.
+       Repeat the flag for multiple: `--law-id 91/2015/QH13 --law-id 92/2015/QH13`.
+       Returns numbered articles:
+         1: <full article content>
+         2: <full article content>
+       Each number (ref_id) is a stable citation handle for THIS case. Ref_ids
+       accumulate across calls: call 1 gives 1..5, call 2 gives 6..10, etc.
+       Cite articles by ref_id ONLY (small integers). NEVER write a law_id,
+       article_number, or aid. The submission harness maps ref_id -> (law_id,
+       aid) for you.
+
+    ## Law taxonomy (the ONLY 18 laws in the corpus — pick from these)
+    91/2015/QH13   Bộ luật Dân sự           — quan hệ dân sự, hợp đồng, bồi thường thiệt hại, thừa kế
+    92/2015/QH13   Bộ luật Tố tụng dân sự   — tố tụng dân sự, khởi kiện, chứng cứ, Tòa án, thẩm quyền
+    326/2016/UBTVQH14 Nghị quyết án phí     — án phí, lệ phí Tòa án, tạm ứng, miễn giảm
+    45/2013/QH13   Luật Đất đai             — quyền sử dụng đất, quy hoạch, giao đất, chuyển nhượng
+    26/2008/QH12   Luật Thi hành án dân sự  — thi hành án, chấp hành viên, tài sản thi hành
+    52/2014/QH13   Luật Hôn nhân và gia đình — hôn nhân, ly hôn, một vợ một chồng, tảo hôn
+    100/2015/QH13  Bộ luật Hình sự          — tội phạm, trách nhiệm hình sự, chế tài
+    93/2015/QH13   Luật Tố tụng hành chính  — quyết định hành chính, khởi kiện hành chính
+    47/2010/QH12   Luật Tổ chức TDTD        — tổ chức tín dụng, ngân hàng, hoạt động ngân hàng
+    50/2014/QH13   Luật Xây dựng            — đầu tư xây dựng, quy hoạch, thiết kế, cấp công trình
+    66/2014/QH13   Luật KD bất động sản     — kinh doanh BĐS, môi giới, hợp đồng, sàn giao dịch
+    60/2014/QH13   Luật Hộ tịch             — hộ tịch, khai sinh, kết hôn, khai tử, giám hộ
+    52/2010/QH12   Luật Nuôi con nuôi       — nuôi con nuôi, quyền trẻ em
+    02/2011/QH13   Luật Khiếu nại           — khiếu nại hành chính, tiếp công dân
+    37/2015/NĐ-CP  Nghị định HĐXD           — hợp đồng xây dựng, bên giao/nhận thầu
+    39/2009/QH12   Luật Người cao tuổi      — quyền lợi người cao tuổi, chăm sóc sức khỏe
+    24/2012/NĐ-CP  Nghị định KD vàng        — kinh doanh vàng, xuất nhập khẩu
+    19/2011/NĐ-CP  Nghị định nuôi con nuôi  — thủ tục đăng ký nuôi con nuôi, lệ phí
+
+    Rule: for civil disputes, ALWAYS query 91/2015 (dân sự) + 92/2015 (tố tụng dân sự)
+    + 326/2016 (án phí). Add other laws only if the case topic matches (đất đai →
+    45/2013, hôn nhân → 52/2014, hình sự → 100/2015, thi hành án → 26/2008).
 
     ## Verdict classes (pick EXACTLY ONE)
     - A_WIN: court grants all of party A's claims
@@ -29,23 +62,106 @@ agent:
     - PARTIAL_B_WIN: court grants ≤50% of A's claimed amount/items (B substantially prevails)
     - B_WIN: court denies all of A's claims
 
-    ## Workflow
-    1. Read case_fact + case_query. Identify what each side (A_role, B_role) is claiming.
-    2. Pull 2–5 judgment chunks via search_case.py targeting disputed facts.
-    3. Pull 3–5 relevant articles via search_law.py targeting the legal issue.
-    4. Decide verdict label. Cite ≥1 article.
-    5. Submit final JSON via:
+    ## Workflow — mandatory 4 phases
+
+    ### Phase 1 (internal, no tool call): Decompose
+    Act as a Vietnamese lawyer.
+
+    (a) **Identify applicable laws.** Read case_fact + case_query. Consulting the
+        Law taxonomy above, list ALL law_ids that could plausibly resolve this
+        case. Almost every civil case involves 91/2015 + 92/2015 + 326/2016;
+        add topical laws (45/2013 for land, 52/2014 for family, 100/2015 for
+        criminal, 26/2008 for enforcement, etc.).
+
+    (b) **Decompose into sub-questions.** For case-evidence retrieval, list 5–8
+        sub-questions covering DIFFERENT aspects:
+          - Facts / timeline / parties' positions
+          - Amounts / assets / dates in dispute
+          - Contract terms / obligations breached
+          - Defense arguments / mitigating factors
+          - Damages / remedies sought
+          - Procedural facts (jurisdiction, deadlines)
+        Each sub-question targets a distinct angle. Case API is RAG w/
+        embeddings — semantically different queries return DIFFERENT chunks.
+        Repeated similar queries waste budget.
+
+    ### Phase 2: Case evidence (MANDATORY ≥5 search_case.py calls)
+    Call search_case.py ONCE per sub-question from Phase 1. Vary queries widely
+    (rephrase, use synonyms, target different facts). Track chunk_ids returned;
+    if same chunk repeats, rephrase to explore a new angle.
+
+    Expected: 5–10 unique chunks across 5–10 calls.
+
+    ### Phase 3: Law retrieval (SCOPED per law, MANDATORY ≥6 calls)
+
+    Every search_law.py call MUST include `--law-id <ID>` — scoping is required.
+
+    **3a. MANDATORY BASELINE (every civil case cites these):**
+       ```mswea_bash_command
+       python tools/search_law.py --case-id {{ case_id }} --top-k 5 --law-id 326/2016/UBTVQH14 --query "án phí dân sự sơ thẩm"
+       ```
+       ```mswea_bash_command
+       python tools/search_law.py --case-id {{ case_id }} --top-k 5 --law-id 92/2015/QH13 --query "thẩm quyền tòa án tố tụng dân sự"
+       ```
+       ```mswea_bash_command
+       python tools/search_law.py --case-id {{ case_id }} --top-k 5 --law-id 91/2015/QH13 --query "<the main civil issue in this case>"
+       ```
+
+    **3b. CASE-SPECIFIC:** Then run ≥3 more scoped calls for the topical laws
+    identified in Phase 1(a). Common patterns:
+      - đất đai / quyền sử dụng đất  → --law-id 45/2013/QH13
+      - thi hành án                   → --law-id 26/2008/QH12
+      - hôn nhân, ly hôn              → --law-id 52/2014/QH13
+      - hợp đồng xây dựng             → --law-id 50/2014/QH13 or 37/2015/NĐ-CP
+      - hình sự                       → --law-id 100/2015/QH13
+      - ngân hàng, tín dụng           → --law-id 47/2010/QH12
+
+    Rule: NEVER run search_law.py without --law-id.
+
+    ### Phase 4: Decide the verdict FIRST (internal, no tool)
+
+    Before assembling the submission, take a step back. From the case_fact,
+    case_query, and the evidence chunks you gathered in Phase 2, ask:
+
+      - What did party A (nguyên đơn) claim?
+      - What did party B (bị đơn) defend?
+      - Based on the judgment chunks, how did the court rule?
+
+    Pick ONE label:
+      - A_WIN         if the court grants all of A's claims
+      - PARTIAL_A_WIN if >50% of A's claim amount/items granted
+      - PARTIAL_B_WIN if ≤50% of A's claim granted (B substantially prevails)
+      - B_WIN         if the court denies all of A's claims
+
+    Do NOT let citation-hunting dilute this decision — the verdict is the
+    highest-weight component of the score. Commit to the label BEFORE
+    picking law refs.
+
+    ### Phase 5: Submit
+
+    **Law citations use ref_id INTEGERS ONLY**.
+      - `law_refs` is a LIST OF INTEGERS from search_law.py stdout.
+        Example: `"law_refs": [1, 3, 7, 12]`
+      - Cite 5–9 ref_ids across multiple laws.
+      - Never invent an integer that was not printed by search_law.py.
+
+    Include ALL unique chunk_ids from Phase 2 in evidence_chunk_ids.
+
+    Submit via ONE ```mswea_bash_command``` block:
        ```mswea_bash_command
        echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && cat <<'EOF'
-       {"verdict":"<LABEL>","evidence_chunk_ids":[...],"law_refs":[{"law_id":"91/2015/QH13","article_number":584}],"reason":"<tiếng Việt>"}
+       {"verdict":"<LABEL>","evidence_chunk_ids":["case_XXXX_chunk_N", ...],"law_refs":[1, 3, 7, 12, 18],"reason":"<tiếng Việt>"}
        EOF
        ```
 
     ## Rules
-    - Every response must contain exactly ONE ```mswea_bash_command``` block.
-    - Repeating the same query wastes budget. Vary queries to find new chunks.
-    - Stop calling tools once you can pick a verdict label and cite ≥1 article.
-    - Use Vietnamese for queries and reasons. Verdict label must be exactly one of the four English tokens above.
+    - Every response must contain exactly ONE ```mswea_bash_command``` block. No exceptions.
+    - MINIMUM 5 search_case.py calls before submission (except if step budget nearly gone).
+    - MINIMUM 4 search_law.py calls before submission.
+    - `law_refs` is a list of INTEGERS (ref_ids from search_law.py stdout). NEVER a list of dicts, strings, or law_id names.
+    - Cite 5–9 ref_ids.
+    - Include ALL unique chunk_ids returned in evidence_chunk_ids.
+    - Use Vietnamese for queries and reasons. Verdict label = one of the four English tokens above.
 
   instance_template: |
     Case ID: {{ case_id }}

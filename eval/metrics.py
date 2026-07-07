@@ -127,25 +127,64 @@ def build_law_name_map(corpus_path: Path | str) -> dict[str, str]:
 
 
 def parse_gold_law_refs(related_law_provisions: str, fallback_map: dict[str, str] | None = None) -> set[tuple[str, int]]:
+    """Extract (law_id, corpus_aid) tuples from gold `related_law_provisions`.
+
+    The raw text stores article numbers (e.g. "Điều 116"). We look up the
+    corresponding corpus aid via retrieval.law_refs_registry so gold and pred
+    live in the same id-space.
+    """
+    from retrieval.law_refs_registry import article_aid  # local import to avoid cycle at module load
+
     refs: set[tuple[str, int]] = set()
     for line in (related_law_provisions or "").splitlines():
         if "|" not in line:
             continue
         name_part, art_part = line.split("|", 1)
-        m = re.search(r"điều\s*(\d+)", art_part.strip().lower())
-        if not m:
+        nums = re.findall(r"điều\s*(\d+)", art_part.strip().lower())
+        if not nums:
             continue
-        aid = int(m.group(1))
         law_id = _guess_law_id(name_part.strip(), fallback_map)
-        refs.add((law_id, aid))
+        for n in nums:
+            article_number = int(n)
+            aid = article_aid(law_id, article_number)
+            if aid is None:
+                aid = article_number  # fallback if lookup fails
+            refs.add((law_id, int(aid)))
     return refs
 
 
-def parse_pred_law_refs(law_refs: list[dict]) -> set[tuple[str, int]]:
+def parse_pred_law_refs(law_refs: list, case_id: str | None = None) -> set[tuple[str, int]]:
+    """Accept either:
+      - list[int]: ref_ids from search_law.py, looked up in runs/law_refs.db by case_id
+      - list[dict]: legacy {law_id, article_number|aid} shape.
+    Returns set of (law_id, aid) tuples where aid is the corpus-internal id.
+    """
     out: set[tuple[str, int]] = set()
-    for r in law_refs or []:
+    if not law_refs:
+        return out
+
+    if all(isinstance(x, (int, float, str)) and str(x).lstrip("-").isdigit() for x in law_refs):
         try:
-            # Accept either article_number (preferred) or aid
+            from retrieval.law_refs_registry import LawRefsRegistry
+        except Exception:
+            return out
+        if not case_id:
+            return out
+        reg = LawRefsRegistry()
+        for x in law_refs:
+            try:
+                ref = reg.lookup(case_id, int(x))
+            except (ValueError, TypeError):
+                continue
+            if ref and ref.aid is not None:
+                out.add((ref.law_id, int(ref.aid)))
+        return out
+
+    # Legacy dict shape.
+    for r in law_refs:
+        if not isinstance(r, dict):
+            continue
+        try:
             num = r.get("article_number") or r.get("aid")
             out.add((str(r["law_id"]), int(num)))
         except (KeyError, ValueError, TypeError):
@@ -203,15 +242,46 @@ def score_case(result: CaseResult) -> dict:
 
 
 def aggregate(per_case: list[dict]) -> dict:
+    """Official ALQAC 2026 formula:
+        FinalScore = 0.70·OutcomeAccuracy + 0.20·PenalizedCaseRecall + 0.10·LawF1_micro
+
+    LawF1_micro is a single F1 over the union of (case_id, law_id, aid) TP/FP/FN
+    across all cases (not the mean of per-case F1).
+
+    PenalizedCaseRecall requires gold case-evidence segments per case, which are
+    NOT included in the public test JSON. Local score uses a placeholder — the
+    real value comes from the official server.
+    """
     n = len(per_case) or 1
     acc = sum(r["verdict_correct"] for r in per_case) / n
-    law_f1 = sum(r["law_f1"] for r in per_case) / n
+
+    tp = fp = fn = 0
+    for r in per_case:
+        gold = {(x["law_id"], int(x["aid"])) for x in r.get("gold_law_refs", []) or []}
+        pred = {(x["law_id"], int(x["aid"])) for x in r.get("pred_law_refs", []) or []}
+        tp += len(gold & pred)
+        fp += len(pred - gold)
+        fn += len(gold - pred)
+    prec = tp / (tp + fp) if (tp + fp) else 0.0
+    rec = tp / (tp + fn) if (tp + fn) else 0.0
+    law_f1_micro = (2 * prec * rec / (prec + rec)) if (prec + rec) else 0.0
+
     penalty = sum(r["api_penalty"] for r in per_case) / n
-    combined = 0.6 * acc + 0.2 * law_f1 + 0.2 * (1 - penalty)
+    penalized_case_recall_placeholder = 1.0 - penalty
+
+    combined = (
+        0.70 * acc
+        + 0.20 * penalized_case_recall_placeholder
+        + 0.10 * law_f1_micro
+    )
+
     return {
         "n_cases": len(per_case),
         "accuracy_4class": acc,
-        "law_f1": law_f1,
+        "law_f1_micro": law_f1_micro,
+        "law_precision_micro": prec,
+        "law_recall_micro": rec,
         "avg_api_penalty": penalty,
+        "penalized_case_recall_placeholder": penalized_case_recall_placeholder,
         "combined_score": combined,
     }

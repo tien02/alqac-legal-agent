@@ -35,9 +35,14 @@ class BM25LawIndex:
         self.articles = articles
         self.uid_to_idx = {a.uid: i for i, a in enumerate(articles)}
 
-    def search(self, query: str, top_k: int = 30) -> list[tuple[LawArticle, float]]:
+    def search(
+        self, query: str, top_k: int = 30, law_ids: set[str] | None = None,
+    ) -> list[tuple[LawArticle, float]]:
         scores = self.bm25.get_scores(tokenize_vi(query))
-        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:top_k]
+        indexed = list(enumerate(scores))
+        if law_ids:
+            indexed = [(i, s) for i, s in indexed if self.articles[i].law_id in law_ids]
+        ranked = sorted(indexed, key=lambda x: x[1], reverse=True)[:top_k]
         return [(self.articles[i], float(s)) for i, s in ranked if s > 0]
 
     @classmethod

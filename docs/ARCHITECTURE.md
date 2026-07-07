@@ -67,18 +67,19 @@ Complements [`PLAN.md`](../PLAN.md) (design rationale) and
 
 ---
 
-## 2. Roles
+## 2. Roles — 4-phase mandatory workflow (v2 prompt)
 
-Three logical roles inside a **single agent process** (not three frameworks):
+Single agent process, four sequential phases baked into the system prompt in
+`configs/alqac.yaml::system_template`:
 
-| Role | Where implemented |
-|---|---|
-| **Planner** | Model turn 1, driven by `configs/alqac.yaml::system_template` — decomposes case into 3–5 legal sub-issues |
-| **Evidence agent** | Model calls `search_case.py` in a loop; budget tracker inside `stopping/budget_tracker.py` caps calls + deduplicates chunks |
-| **Law-retrieval agent** | Model calls `search_law.py`; BM25 (sparse) + BGE-M3 (dense) + BGE-reranker-v2-m3 fused via RRF |
-| **Verdict agent** | Final assistant turn emits `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` + JSON |
+| Phase | Action | Minimum calls | Rationale |
+|---|---|---|---|
+| **1 Decompose** | Model lists 5–8 sub-questions covering facts, timeline, amounts, contract terms, defenses, damages, procedure | 0 (internal) | Case API is RAG w/ embeddings — semantically varied queries return DIFFERENT chunks. Similar queries waste budget. |
+| **2 Case evidence** | `search_case.py` once per sub-question. Track chunk_ids; rephrase if same chunk repeats. | **≥ 5** | Judgment chunks needed to ground the verdict — case_fact alone under-specifies. |
+| **3 Law retrieval** | `search_law.py` with noun-phrase queries. One query per distinct legal issue. Different laws for different issues. | **≥ 3** | Gold refs avg 9 articles across multiple laws. Cite ≥3 across ≥2 laws. |
+| **4 Verdict** | Emit final JSON via `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`. Include all unique chunk_ids + ≥3 law refs. | 1 | Only submission triggers `Submitted` exit; otherwise runs to LimitsExceeded. |
 
-Design rationale: adopt mini-swe-agent as-is (no custom loop, no JSON tool-calling schema), so the pipeline works with any instruction-tuned model regardless of native function-calling support.
+Design rationale: adopt mini-swe-agent as-is (no custom loop, no JSON tool-calling schema). The prompt does all orchestration; harness only enforces "one fenced block per turn" and step/time/format budgets.
 
 ---
 
@@ -159,11 +160,16 @@ EOF
 
 ### 6.1 Case API (`retrieval/case_api_client.py`)
 
-- Remote HTTP endpoint (`https://alqac-api.ngrok.pro/retrieve`), auth via `ALQAC_API_KEY`.
-- SQLite log per case_id (`runs/<run_id>/case_api.sqlite`) — tracks all returned chunks + counter.
+- Remote HTTP endpoint (`POST https://alqac-api.ngrok.pro/retrieve`), auth via `X-API-Key` header (`ALQAC_API_KEY` env).
+- Request body: `{"query": "...", "case_id": "case_XXXX"}`.
+- Response body: `{"results": [{"chunk_id": "case_XXXX_chunk_N", "text": "...", "score": float}]}`.
+  Server returns exactly ONE result per call (RAG top-1 over the case's chunks).
+- Client parses `results[0]`. Previously read top-level `chunk_id`/`text` — silent bug returned empty for every call. Fixed 2026-07-07.
+- SQLite log at `runs/case_calls.db` (shared across runs — `tools/search_case.py` uses `ROOT/runs` as default `runs_dir`). Schema: `calls(case_id TEXT, chunk_id TEXT, query TEXT, ts REAL, score REAL)`, PK `(case_id, chunk_id, query)`.
 - Budget policy in `stopping/budget_tracker.py`:
   - Hard cap: N calls per case (soft: ≤10 ideal).
   - Redundancy check: cosine similarity to already-returned chunks; if > threshold, return `"no new relevant segment found"` instead of the chunk (nudges model to stop).
+- **Known counter mismatch**: `eval/run_dev_set.py::_count_unique_chunks(case_id, run_dir)` reads `run_dir/case_calls.db`, but `tools/search_case.py` writes to top-level `runs/case_calls.db`. Result: `n_unique_chunks` in `predictions.jsonl` reports 0. Fix pending — either pass run_dir env down to `tools/search_case.py`, or have the scorer read from the shared root DB.
 
 ### 6.2 Law retrieval (`retrieval/law_index.py`, `retrieval/embeddings.py`)
 
@@ -276,10 +282,12 @@ Jinja template vars for the case; loop / parser / message-history behavior is up
 | Symptom | Root cause | Mitigation |
 |---|---|---|
 | `RepeatedFormatError` after 3 turns, empty submission | Model emits >1 fenced block per turn | Prompt: enforce "EXACTLY ONE fenced block" at top |
-| `LimitsExceeded` before submit | 4-step VN workflow needs ≥6 tool calls, step_limit=8 too tight | Raise step_limit to 12–15 |
-| `ContextWindowExceededError` at 16384 | Long case_fact + long system prompt + big observation | Trim system prompt or truncate observation via `observation_template` |
+| `LimitsExceeded` before submit | 4-phase workflow needs ≥6 tool calls, step_limit=8 too tight | Raise `step_limit` to 30 (current default) |
+| `ContextWindowExceededError` at 16384 | Long case_fact + long system prompt + big observation | Bump llama.cpp `-c` (e.g. 24576) and `docker compose up -d --force-recreate` (plain `restart` won't reload the command) |
 | Empty `content`, `finish_reason=length` | Qwen3.5 default thinking mode fills max_tokens with `<think>` | Set `chat_template_kwargs.enable_thinking=false` in `extra_body` |
 | All law_f1 = 0 while retrieval seemingly working | GPU OOM in `search_law.py` (LLM occupies both GPUs) | `LAW_INDEX_DEVICE=cpu` + `CUDA_VISIBLE_DEVICES=""` in env config |
+| All `case_evidence=[]`, model still gets acc≈0.5 | Case API returned `chunk_id=""` because client parsed top-level instead of `results[0]` | Fixed 2026-07-07 in `retrieval/case_api_client.py::retrieve` |
+| Model only cites 1–2 law articles (gold avg 9) | Prompt says "cite ≥1 article" — model treats as floor | Prompt v2: mandatory ≥3 refs across multiple laws (`configs/alqac.yaml`) |
 | Q4 GGUF regression vs fp16 safetensors | Quantization loss compounds with reasoning | Q5/Q6 quant or restore safetensors for evaluation |
 
 ---

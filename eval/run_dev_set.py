@@ -99,7 +99,7 @@ def run_one_case(case: dict, base_config: dict, gold_law_map: dict[str, str], ru
 
     submission = extra.get("submission", "")
     pred_verdict, pred_law_refs_raw, evidence_chunk_ids = parse_submission_verdict(submission)
-    pred_law_refs = parse_pred_law_refs(pred_law_refs_raw)
+    pred_law_refs = parse_pred_law_refs(pred_law_refs_raw, case_id=case_id)
     gold_law_refs = parse_gold_law_refs(case.get("related_law_provisions", ""), fallback_map=gold_law_map)
     n_unique = _count_unique_chunks(case_id, run_dir)
 
@@ -140,6 +140,8 @@ def main(
     api_base: str | None = None,
     start_idx: int = 0,
     end_idx: int | None = None,
+    rerun_empty: int = 2,
+    concurrency: int = 3,
 ) -> dict:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     cases = load_cases()
@@ -165,33 +167,79 @@ def main(
     print(f"run_id={run_id}")
     print(f"Loaded {len(cases)} cases. gold_law_map keys: {list(gold_law_map)[:5]}")
 
-    results: list[dict] = []
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    def _run(idx_case: tuple[int, dict]) -> tuple[int, dict]:
+        i, case = idx_case
+        print(f"[{i}/{len(cases)}] start case_id={case['case_id']}", flush=True)
+        try:
+            return i, run_one_case(case, base_config, gold_law_map, run_dir)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return i, {
+                "case_id": case["case_id"],
+                "gold_verdict": case.get("verdict_label", ""),
+                "pred_verdict": "",
+                "verdict_correct": 0,
+                "law_precision": 0.0,
+                "law_recall": 0.0,
+                "law_f1": 0.0,
+                "n_unique_chunks": 0,
+                "api_penalty": 1.0,
+                "elapsed_seconds": 0,
+                "error": str(e),
+            }
+
+    results: list[dict] = [None] * len(cases)  # type: ignore
     pred_path = run_dir / "predictions.jsonl"
+    write_lock = threading.Lock()
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        futures = [pool.submit(_run, (i + 1, c)) for i, c in enumerate(cases)]
+        for fut in futures:
+            i, r = fut.result()
+            with write_lock:
+                results[i - 1] = r
+                print(f"[{i}/{len(cases)}] done case_id={r['case_id']} "
+                      f"acc={r.get('verdict_correct',0)} f1={r.get('law_f1',0):.2f}", flush=True)
     with pred_path.open("w", encoding="utf-8") as fh:
-        for i, case in enumerate(cases, 1):
-            print(f"[{i}/{len(cases)}] case_id={case['case_id']}", flush=True)
+        for r in results:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    # Auto-rerun degenerate predictions:
+    #   - empty pred_verdict
+    #   - zero law refs cited
+    #   - zero case-evidence chunks cited
+    def _is_bad(r: dict) -> bool:
+        if not (r.get("pred_verdict") or "").strip():
+            return True
+        if not r.get("pred_law_refs"):
+            return True
+        if not r.get("evidence_chunk_ids"):
+            return True
+        return False
+
+    case_by_id = {c["case_id"]: c for c in cases}
+    for attempt in range(1, rerun_empty + 1):
+        bad_idx = [i for i, r in enumerate(results) if _is_bad(r)]
+        if not bad_idx:
+            break
+        print(f"[rerun {attempt}/{rerun_empty}] {len(bad_idx)} degenerate cases: "
+              f"{[results[i]['case_id'] for i in bad_idx]}", flush=True)
+        for i in bad_idx:
+            case_id = results[i]["case_id"]
             try:
-                r = run_one_case(case, base_config, gold_law_map, run_dir)
+                results[i] = run_one_case(case_by_id[case_id], base_config, gold_law_map, run_dir)
             except Exception as e:
                 import traceback
-
                 traceback.print_exc()
-                r = {
-                    "case_id": case["case_id"],
-                    "gold_verdict": case.get("verdict_label", ""),
-                    "pred_verdict": "",
-                    "verdict_correct": 0,
-                    "law_precision": 0.0,
-                    "law_recall": 0.0,
-                    "law_f1": 0.0,
-                    "n_unique_chunks": 0,
-                    "api_penalty": 1.0,
-                    "elapsed_seconds": 0,
-                    "error": str(e),
-                }
-            results.append(r)
+                results[i]["error"] = f"rerun_attempt_{attempt}: {e}"
+
+    # Rewrite predictions.jsonl with (possibly) reran rows.
+    with pred_path.open("w", encoding="utf-8") as fh:
+        for r in results:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-            fh.flush()
 
     agg = aggregate(results)
     (run_dir / "metrics.json").write_text(json.dumps(agg, ensure_ascii=False, indent=2))

@@ -111,10 +111,12 @@ class CaseApiClient:
             return self.retrieve(query, case_id, force=force)
         resp.raise_for_status()
         data = resp.json()
+        results = data.get("results") or []
+        top = results[0] if results else {}
         chunk = CaseChunk(
-            chunk_id=str(data.get("chunk_id", "")),
-            text=str(data.get("text", "")),
-            score=float(data.get("score", 0.0)),
+            chunk_id=str(top.get("chunk_id", "")),
+            text=str(top.get("text", "")),
+            score=float(top.get("score", 0.0)),
         )
         self._record(case_id, chunk, query)
         return chunk
